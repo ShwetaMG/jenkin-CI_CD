@@ -1,28 +1,39 @@
 pipeline {
-  agent {
-    docker {
-      image 'abhishekf5/maven-abhishek-docker-agent:v1'
-      args '--user root -v /var/run/docker.sock:/var/run/docker.sock' // mount Docker socket to access the host's Docker daemon
-    }
-  } 
-
+  agent none // Disabled global agent to allow stage-specific agents
+  
   stages {
     stage('Checkout') {
+      agent any // Runs on your host
       steps {
         sh 'echo passed'
-        //git branch: 'main', url: 'https://github.com/ShwetaMG/jenkin-CI_CD.git'
+        // If you need to dynamically clone the repository, uncomment the line below:
+        // git branch: 'main', url: 'https://github.com/ShwetaMG/jenkin-CI_CD.git'
       }
     }
+    
     stage('Build and Test') {
+      agent {
+        docker {
+          // Uses a modern, official Maven container
+          image 'maven:3.9.6-eclipse-temurin-17' 
+        }
+      }
       steps {
         sh 'ls -ltr'
-        // build the project and create a JAR file
+        // Builds the project and creates the JAR file
         sh 'cd spring-boot-app && mvn clean package'
       }
     }
+    
     stage('Static Code Analysis') {
+      agent {
+        docker {
+          // Uses the same modern Maven container
+          image 'maven:3.9.6-eclipse-temurin-17' 
+        }
+      }
       environment {
-        SONAR_URL = "http://43.204.145.11:9000"
+        SONAR_URL = "http://43.204.145.11:9000" // Replace with your SonarQube EC2 IP
       }
       steps {
         withCredentials([string(credentialsId: 'sonarqube', variable: 'SONAR_AUTH_TOKEN')]) {
@@ -30,32 +41,41 @@ pipeline {
         }
       }
     }
+    
     stage('Build and Push Docker Image') {
+      agent any // Runs directly on your EC2 host using your upgraded Docker client
       environment {
-        DOCKER_IMAGE = "shwetamg20/ultimate-cicd:${BUILD_NUMBER}"
-        // DOCKERFILE_LOCATION = "spring-boot-app/Dockerfile"
-        REGISTRY_CREDENTIALS = credentials('docker-cred')
+        // !!! REPLACE 'shwetamg20' WITH YOUR DOCKER HUB USERNAME !!!
+        DOCKER_IMAGE = "shwetamg20/ultimate-cicd:${BUILD_NUMBER}" 
       }
       steps {
         script {
+            // 1. Build the image using the host's Docker engine
             sh 'cd spring-boot-app && docker build -t ${DOCKER_IMAGE} .'
-            def dockerImage = docker.image("${DOCKER_IMAGE}")
-            docker.withRegistry('https://index.docker.io/v1/', "docker-cred") {
-                dockerImage.push()
+            
+            // 2. Log in and push the image using the host's upgraded Docker CLI
+            withCredentials([usernamePassword(credentialsId: 'docker-cred', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                sh 'docker login -u $DOCKER_USER -p $DOCKER_PASS'
+                sh 'docker push ${DOCKER_IMAGE}'
             }
         }
       }
     }
+    
     stage('Update Deployment File') {
+        agent any // Runs on your host
         environment {
-            GIT_REPO_NAME = "jenkin-CI_CD"
-            GIT_USER_NAME = "ShwetaMG"
+            // !!! REPLACE WITH YOUR REPOSITORY NAME AND GITHUB USERNAME !!!
+            GIT_REPO_NAME = "jenkin-CI_CD" // e.g., "spring-boot-app" or "Jenkins-Zero-To-Hero"
+            GIT_USER_NAME = "ShwetaMG       // Your GitHub username
         }
         steps {
             withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
                 sh '''
+                    # !!! REPLACE WITH YOUR ACTUAL GIT CONFIG EMAIL/NAME !!!
                     git config user.email "shwetamgarawad@gmail.com"
                     git config user.name "ShwetaMG"
+                    
                     BUILD_NUMBER=${BUILD_NUMBER}
                     sed -i "s/replaceImageTag/${BUILD_NUMBER}/g" spring-boot-app-manifests/deployment.yml
                     git add spring-boot-app-manifests/deployment.yml
